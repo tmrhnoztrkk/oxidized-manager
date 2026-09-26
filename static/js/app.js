@@ -1,0 +1,377 @@
+// App shell: first-run setup, session, layout, workspace switching and the hash router
+import { api } from './api.js';
+import { getLang, LANGS, N_, setLang, t } from './i18n.js';
+import { $, applyTheme, dropdown, esc, getThemePref, h, icon, loader, modal, setBusy, toast, toastError } from './ui.js';
+import * as dashboard from './views/dashboard.js';
+import * as devices from './views/devices.js';
+import * as device from './views/device.js';
+import * as groups from './views/groups.js';
+import * as logs from './views/logs.js';
+import * as search from './views/search.js';
+import * as settingsView from './views/settings.js';
+import * as destinations from './views/destinations.js';
+import * as workspaces from './views/workspaces.js';
+import * as users from './views/users.js';
+import * as access from './views/access.js';
+import * as audit from './views/audit.js';
+import { renderSetup, renderWorkspaceChooser } from './views/setup.js';
+
+export const state = {
+  user: null,
+  role: null, // global role: admin | user
+  me: {},
+  workspaces: [],
+  iid: null, // selected workspace id
+  models: [],
+  counts: {},
+};
+
+export const current = () => state.workspaces.find((w) => w.id === state.iid);
+export const navigate = (hash) => { location.hash = hash; };
+export const isAdmin = () => state.role === 'admin';
+
+export const WS_TYPES = {
+  local: { label: N_('Embedded'), long: N_('Oxidized running in this container'), icon: 'box' },
+  agent: { label: N_('Remote'), long: N_('Remote Oxidized Manager (API key)'), icon: 'cloud' },
+  oxidized: { label: N_('Oxidized API'), long: N_('Plain Oxidized REST API (read-only)'), icon: 'eye' },
+};
+
+export const ROLES = {
+  viewer: { label: N_('Viewer'), desc: N_('Read devices, configs, diffs, logs and backup status') },
+  operator: { label: N_('Operator'), desc: N_('Viewer + add/edit/delete devices, trigger backups, connection tests') },
+  manager: { label: N_('Manager'), desc: N_('Operator + Oxidized settings, groups, backup destinations, sharing') },
+};
+const LEVEL = { viewer: 1, operator: 2, manager: 3 };
+
+// Current user's permission in a workspace (admins are managers everywhere)
+export const can = (level, w = current()) => !!w && (LEVEL[w.role] || 0) >= LEVEL[level];
+// Can the Oxidized process be controlled (embedded here or embedded in a remote manager)
+export const canControl = (w = current()) => !!w && (w.type === 'local' || w.type === 'agent');
+// Are router.db / config editable (not a plain Oxidized REST API)
+export const canEdit = (w = current()) => !!w && w.type !== 'oxidized';
+export const roleBadge = (role) => (role ? `<span class="badge ${role === 'manager' ? 'primary' : role === 'operator' ? 'info' : ''}">${esc(t(ROLES[role]?.label || role))}</span>` : '');
+
+const NAV = [
+  { section: N_('Workspace'), ws: true },
+  { id: 'dashboard', href: '#/', label: N_('Overview'), icon: 'dashboard', ws: true },
+  { id: 'devices', href: '#/devices', label: N_('Devices'), icon: 'server', count: 'devices', ws: true },
+  { id: 'groups', href: '#/groups', label: N_('Groups & credentials'), icon: 'layers', ws: true, edit: true, need: 'manager' },
+  { id: 'search', href: '#/search', label: N_('Config search'), icon: 'search', ws: true },
+  { id: 'logs', href: '#/logs', label: N_('Live logs'), icon: 'terminal', ws: true, control: true },
+  { id: 'destinations', href: '#/destinations', label: N_('Backup destinations'), icon: 'cloudUp', ws: true },
+  { id: 'settings', href: '#/settings', label: N_('Oxidized settings'), icon: 'settings', ws: true, edit: true, need: 'manager' },
+  { section: N_('Administration'), admin: true },
+  { id: 'workspaces', href: '#/workspaces', label: N_('Workspaces'), icon: 'layers', admin: true },
+  { id: 'users', href: '#/users', label: N_('Users & access'), icon: 'users', admin: true },
+  { id: 'access', href: '#/access', label: N_('Remote access (API keys)'), icon: 'key', admin: true },
+  { id: 'audit', href: '#/audit', label: N_('Audit log'), icon: 'history', audit: true },
+];
+
+const ROUTES = [
+  { re: /^#?\/?$/, view: dashboard, nav: 'dashboard', needsWs: true },
+  { re: /^#\/devices\/?$/, view: devices, nav: 'devices', needsWs: true },
+  { re: /^#\/devices\/([^/]+)(?:\/([a-z]+))?$/, view: device, nav: 'devices', needsWs: true, params: ['name', 'tab'] },
+  { re: /^#\/groups\/?$/, view: groups, nav: 'groups', needsWs: true, need: 'manager' },
+  { re: /^#\/logs\/?$/, view: logs, nav: 'logs', needsWs: true },
+  { re: /^#\/search\/?$/, view: search, nav: 'search', needsWs: true },
+  { re: /^#\/destinations\/?$/, view: destinations, nav: 'destinations', needsWs: true },
+  { re: /^#\/settings(?:\/([a-z]+))?\/?$/, view: settingsView, nav: 'settings', needsWs: true, need: 'manager', params: ['tab'] },
+  { re: /^#\/workspaces\/?$/, view: workspaces, nav: 'workspaces', admin: true },
+  { re: /^#\/users\/?$/, view: users, nav: 'users', admin: true },
+  { re: /^#\/access\/?$/, view: access, nav: 'access', admin: true },
+  { re: /^#\/audit\/?$/, view: audit, nav: 'audit' },
+];
+
+let cleanup = null;
+let routeSeq = 0;
+
+// ------------------------------------------------------------------ session
+function renderLogin() {
+  document.getElementById('root').innerHTML = '';
+  const el = h(`<div class="login-wrap"><form class="card login-card stack" autocomplete="on">
+    <div class="brand"><div class="brand-logo">Ox</div><div><div class="brand-name">Oxidized Manager</div><div class="brand-sub">${esc(t('Network configuration backup management'))}</div></div></div>
+    <div class="field"><label>${esc(t('Username'))}</label><input class="input" name="username" autocomplete="username" required></div>
+    <div class="field"><label>${esc(t('Password'))}</label><input class="input" type="password" name="password" autocomplete="current-password" required></div>
+    <div class="alert danger" id="login-err" style="display:none">${icon('alert')}<div class="alert-body"></div></div>
+    <button class="btn primary" type="submit" style="height:38px">${esc(t('Sign in'))}</button>
+    <div class="row between small muted"><div class="btn-group" data-lang-btns></div><div class="btn-group" data-theme-btns></div></div>
+  </form></div>`);
+  document.getElementById('root').appendChild(el);
+  themeButtons(el.querySelector('[data-theme-btns]'));
+  langButtons(el.querySelector('[data-lang-btns]'));
+  const form = el.querySelector('form');
+  form.username.focus();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = form.querySelector('button[type=submit]');
+    setBusy(btn, true, t('Signing in'));
+    try {
+      await api.post('/api/auth/login', { username: form.username.value, password: form.password.value }, { noAuthRedirect: true });
+      await boot();
+    } catch (err) {
+      const box = $('#login-err', el);
+      box.style.display = '';
+      box.querySelector('.alert-body').textContent = err.message;
+      setBusy(btn, false);
+    }
+  };
+}
+
+export function themeButtons(container) {
+  const pref = getThemePref();
+  container.innerHTML = [['light', 'sun', N_('Light')], ['dark', 'moon', N_('Dark')], ['system', 'monitor', N_('System')]]
+    .map(([k, ic, l]) => `<button type="button" class="btn sm ${pref === k ? 'active' : ''}" data-theme-set="${k}" title="${esc(t(l))}">${icon(ic)}</button>`).join('');
+  container.querySelectorAll('[data-theme-set]').forEach((b) => {
+    b.onclick = () => { applyTheme(b.dataset.themeSet); themeButtons(container); };
+  });
+}
+
+export function langButtons(container) {
+  container.innerHTML = LANGS.map(([k, l]) => `<button type="button" class="btn sm ${getLang() === k ? 'active' : ''}" data-lang="${k}" title="${esc(l)}">${k.toUpperCase()}</button>`).join('');
+  container.querySelectorAll('[data-lang]').forEach((b) => {
+    b.onclick = () => { if (b.dataset.lang !== getLang()) setLang(b.dataset.lang); };
+  });
+}
+
+// ------------------------------------------------------------------ layout
+function renderShell() {
+  const root = document.getElementById('root');
+  root.innerHTML = '';
+  const el = h(`<div class="app" id="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-logo">Ox</div><div><div class="brand-name">Oxidized Manager</div><div class="brand-sub">v${esc(state.me.version || '')}</div></div></div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-foot stack">
+        <div class="row between small muted"><div class="btn-group" id="lang-btns"></div><div class="btn-group" id="theme-btns"></div></div>
+        <button class="user-chip" id="user-menu">${icon('user')}<span class="ellipsis"><b>${esc(state.user)}</b></span>
+          ${isAdmin() ? `<span class="badge primary">${esc(t('Admin'))}</span>` : ''}${icon('chevronDown')}</button>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <button class="btn ghost icon menu-toggle" id="menu-toggle" aria-label="${esc(t('Menu'))}">${icon('menu')}</button>
+        <button class="instance-switch" id="inst-switch"></button>
+        <div class="spacer"></div>
+        <button class="btn sm" id="top-reload" title="${esc(t('Make Oxidized reload its node list (re-reads router.db)'))}">${icon('refresh')}<span>${esc(t('Reload'))}</span></button>
+      </header>
+      <main class="content" id="view"></main>
+    </div>
+  </div>`);
+  root.appendChild(el);
+  themeButtons($('#theme-btns', el));
+  langButtons($('#lang-btns', el));
+  $('#user-menu', el).onclick = (e) => dropdown(e.currentTarget, [
+    { label: t('Change password'), icon: 'lock', onClick: changePassword },
+    '-',
+    { label: t('Sign out'), icon: 'logout', onClick: async () => { await api.post('/api/auth/logout'); state.user = null; renderLogin(); } },
+  ], { left: true, up: true });
+  $('#menu-toggle', el).onclick = () => el.classList.toggle('nav-open');
+  $('#inst-switch', el).onclick = (e) => workspaceMenu(e.currentTarget);
+  $('#top-reload', el).onclick = async (e) => {
+    if (!state.iid) return;
+    const btn = e.currentTarget;
+    setBusy(btn, true);
+    try {
+      reloadToast(await api.post(`/api/w/${state.iid}/reload`));
+      window.dispatchEvent(new CustomEvent('oxmgr:refresh'));
+    } catch (err) { toastError(err); }
+    setBusy(btn, false);
+  };
+  renderNav();
+  renderWorkspaceSwitch();
+}
+
+function changePassword() {
+  const m = modal({
+    title: `${icon('lock')} ${esc(t('Change password'))}`, size: 'sm',
+    body: `<form class="stack" autocomplete="off">
+      <div class="field"><label>${esc(t('Current password'))}</label><input class="input" type="password" name="cur" autocomplete="current-password"></div>
+      <div class="field"><label>${esc(t('New password'))} <span class="muted small">(${esc(t('at least 8 characters'))})</span></label><input class="input" type="password" name="n1" autocomplete="new-password"></div>
+      <div class="field"><label>${esc(t('New password (again)'))}</label><input class="input" type="password" name="n2" autocomplete="new-password"></div></form>`,
+    footer: `<button class="btn" data-a="no">${esc(t('Cancel'))}</button><button class="btn primary" data-a="yes">${esc(t('Change password'))}</button>`,
+  });
+  const f = m.body.querySelector('form');
+  m.foot.querySelector('[data-a=no]').onclick = m.close;
+  m.foot.querySelector('[data-a=yes]').onclick = async (e) => {
+    if (f.n1.value !== f.n2.value) { toast(t('The new passwords do not match'), 'warning'); return; }
+    setBusy(e.currentTarget, true);
+    try { await api.put('/api/users/me/password', { current: f.cur.value, new: f.n1.value }); m.close(); toast(t('Password changed'), 'success'); } catch (err) { toastError(err); setBusy(e.currentTarget, false); }
+  };
+}
+
+export function reloadToast(r, okText) {
+  if (!r) return;
+  if (r.ok) { toast(okText || r.message, 'success'); return; }
+  const actions = r.can_restart && can('manager') ? [{ label: t('Restart Oxidized'), primary: true, onClick: () => restartOxidized() }] : [];
+  toast(t('Saved, but Oxidized could not be updated: {msg}', { msg: r.message }), 'warning', { actions });
+}
+
+export async function restartOxidized() {
+  try {
+    toast(t('Restarting Oxidized…'), 'info');
+    const st = await api.post(`/api/w/${state.iid}/process/restart`);
+    if (st.state === 'running') toast(t('Oxidized restarted. The API is ready in a few seconds.'), 'success');
+    else toast(t('Oxidized state: {state}', { state: `${st.state}${st.message ? ` — ${st.message}` : ''}` }), 'warning');
+    setTimeout(() => window.dispatchEvent(new CustomEvent('oxmgr:refresh')), 4000);
+  } catch (e) { toastError(e); }
+}
+
+// After a config change: Oxidized has to be restarted
+export function restartRequiredToast(msg = t('Config saved. Restart Oxidized to apply the changes.')) {
+  toast(msg, 'success', { actions: canControl() && can('manager') ? [{ label: t('Restart now'), primary: true, onClick: restartOxidized }] : [], timeout: 20000 });
+}
+
+export function setCount(key, n) {
+  state.counts[key] = n;
+  const el = document.querySelector(`[data-count="${key}"]`);
+  if (el) { el.textContent = n; el.style.display = n == null ? 'none' : ''; }
+}
+
+function navVisible(n, w) {
+  if (n.admin) return isAdmin();
+  if (n.audit) return isAdmin() || state.workspaces.some((x) => x.role === 'manager');
+  if (n.ws) {
+    if (!w) return !!n.section;
+    if (n.edit && !canEdit(w)) return false;
+    if (n.control && !canControl(w)) return false;
+    if (n.need && !can(n.need, w)) return false;
+  }
+  return true;
+}
+
+function renderNav(active) {
+  const nav = $('#nav');
+  if (!nav) return;
+  const w = current();
+  const items = NAV.filter((n) => navVisible(n, w));
+  // drop a section title that has no visible items after it
+  const cleaned = items.filter((n, i) => !n.section || (items[i + 1] && !items[i + 1].section));
+  nav.innerHTML = cleaned.map((n) => (n.section
+    ? `<div class="nav-section">${esc(t(n.section))}</div>`
+    : `<a href="${n.href}" class="${active === n.id ? 'active' : ''}">${icon(n.icon)}<span>${esc(t(n.label))}</span>${n.count ? `<span class="count" data-count="${n.count}" style="${state.counts[n.count] == null ? 'display:none' : ''}">${state.counts[n.count] ?? ''}</span>` : ''}</a>`)).join('');
+  nav.querySelectorAll('a').forEach((a) => { a.onclick = () => $('#app')?.classList.remove('nav-open'); });
+}
+
+function renderWorkspaceSwitch() {
+  const btn = $('#inst-switch');
+  if (!btn) return;
+  const w = current();
+  btn.innerHTML = w
+    ? `${icon(WS_TYPES[w.type]?.icon || 'box')}<span class="ellipsis"><b>${esc(w.name)}</b></span><span class="mode">${esc(t(WS_TYPES[w.type]?.label || ''))}${isAdmin() ? '' : ` · ${esc(t(ROLES[w.role]?.label || ''))}`}</span>${icon('chevronDown')}`
+    : `${icon(isAdmin() ? 'plus' : 'layers')}<span>${esc(isAdmin() ? t('Create a workspace') : t('No workspace'))}</span>`;
+  const reload = $('#top-reload');
+  if (reload) reload.style.display = w && can('operator', w) && w.type !== 'oxidized' ? '' : 'none';
+}
+
+function workspaceMenu(anchor) {
+  const items = state.workspaces.map((w) => ({
+    label: `${w.name}  ·  ${t(WS_TYPES[w.type]?.label || w.type)}${isAdmin() ? '' : `  ·  ${t(ROLES[w.role]?.label || '')}`}`,
+    icon: WS_TYPES[w.type]?.icon || 'box',
+    active: w.id === state.iid,
+    onClick: () => selectWorkspace(w.id),
+  }));
+  if (isAdmin()) items.push('-', { label: t('Add / manage workspaces…'), icon: 'settings', onClick: () => navigate('#/workspaces') });
+  if (!items.length) return;
+  dropdown(anchor, items, { left: true });
+}
+
+export function selectWorkspace(id) {
+  state.iid = id;
+  state.counts = {};
+  try { localStorage.setItem('oxmgr-ws', id); } catch (e) { /* storage blocked */ }
+  renderWorkspaceSwitch();
+  route();
+}
+
+export async function loadWorkspaces() {
+  state.workspaces = await api.get('/api/workspaces');
+  let saved = null;
+  try { saved = localStorage.getItem('oxmgr-ws'); } catch (e) { /* storage blocked */ }
+  if (!state.workspaces.find((w) => w.id === state.iid)) {
+    state.iid = (state.workspaces.find((w) => w.id === saved) || state.workspaces[0])?.id || null;
+  }
+  state.me.has_local = state.workspaces.some((w) => w.type === 'local') || state.me.has_local;
+  renderWorkspaceSwitch();
+}
+
+// ------------------------------------------------------------------ router
+export async function route() {
+  if (!state.user) return;
+  const [hash, qs] = (location.hash || '#/').split('?');
+  let match = null; let r = null;
+  for (const rt of ROUTES) {
+    match = hash.match(rt.re);
+    if (match) { r = rt; break; }
+  }
+  if (!r) { navigate('#/'); return; }
+  if (cleanup) { try { cleanup(); } catch (e) { /* ignore */ } cleanup = null; }
+  document.querySelectorAll('.overlay, .dropdown-menu.floating').forEach((o) => o.remove());
+  renderNav(r.nav);
+  const view = $('#view');
+  if (r.admin && !isAdmin()) { navigate('#/'); return; }
+  if (r.needsWs && !current()) {
+    view.innerHTML = '';
+    view.appendChild(h(isAdmin()
+      ? `<div class="card"><div class="empty">${icon('layers')}<h3>${esc(t('No workspace yet'))}</h3>
+        <div>${esc(t('Run Oxidized in this container or connect to a remote Oxidized.'))}</div>
+        <div style="margin-top:14px"><a class="btn primary" href="#/workspaces">${icon('plus')} ${esc(t('Create a workspace'))}</a></div></div></div>`
+      : `<div class="card"><div class="empty">${icon('lock')}<h3>${esc(t('No workspace has been shared with you yet'))}</h3>
+        <div>${esc(t('Ask an administrator to give you access to a workspace.'))}</div></div></div>`));
+    return;
+  }
+  if (r.need && !can(r.need)) {
+    view.innerHTML = `<div class="card"><div class="empty">${icon('lock')}<h3>${esc(t('No permission'))}</h3><div>${esc(t('This page requires the {role} role in this workspace.', { role: t(ROLES[r.need].label) }))}</div></div></div>`;
+    return;
+  }
+  const params = { query: Object.fromEntries(new URLSearchParams(qs || '')) };
+  (r.params || []).forEach((p, i) => { params[p] = match[i + 1] ? decodeURIComponent(match[i + 1]) : undefined; });
+  // A fresh container per navigation: a late response of the old page cannot overwrite the new one
+  const seq = ++routeSeq;
+  const pageEl = document.createElement('div');
+  pageEl.innerHTML = loader();
+  view.replaceChildren(pageEl);
+  window.scrollTo(0, 0);
+  try {
+    const done = await r.view.render(pageEl, params) || null;
+    if (seq === routeSeq) cleanup = done;
+    else if (done) done(); // navigated away in the meantime
+  } catch (e) {
+    if (seq !== routeSeq) return;
+    console.error(e);
+    pageEl.innerHTML = `<div class="alert danger">${icon('alert')}<div class="alert-body"><b>${esc(t('The page could not be loaded'))}</b><br>${esc(e.message || e)}</div></div>`;
+  }
+}
+
+export async function boot() {
+  const me = await api.get('/api/auth/me', { noAuthRedirect: true });
+  state.me = me;
+  if (me.needs_setup) { renderSetup(); return; }
+  if (!me.user) { renderLogin(); return; }
+  state.user = me.user;
+  state.role = me.role;
+  await loadWorkspaces();
+  state.models = await api.get('/api/models').catch(() => []);
+  if (!state.workspaces.length && isAdmin()) { renderWorkspaceChooser(); return; }
+  renderShell();
+  route();
+}
+
+// Enter the main shell after a workspace was created (from the wizard)
+export async function enterApp(wid) {
+  if (wid) {
+    state.iid = wid;
+    try { localStorage.setItem('oxmgr-ws', wid); } catch (e) { /* storage blocked */ }
+  }
+  state.me = await api.get('/api/auth/me', { noAuthRedirect: true });
+  state.role = state.me.role;
+  await loadWorkspaces();
+  renderShell();
+  navigate(wid ? '#/' : '#/workspaces');
+  route();
+}
+
+window.addEventListener('hashchange', route);
+window.addEventListener('oxmgr:unauthorized', () => { if (state.user) { state.user = null; renderLogin(); toast(t('Your session has expired'), 'warning'); } });
+boot().catch((e) => {
+  document.getElementById('root').innerHTML = `<div class="content"><div class="alert danger">${icon('alert')}<div class="alert-body">${esc(e.message)}</div></div></div>`;
+});

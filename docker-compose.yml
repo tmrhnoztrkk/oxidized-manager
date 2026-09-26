@@ -1,0 +1,21 @@
+# Oxidized Manager — one container: web UI + API, optional embedded Oxidized, backup destinations.
+#
+#   cp .env.example .env
+#   docker compose up -d --build
+#   → http://SERVER:8080  (the setup wizard opens on first visit)
+
+services:
+  oxidized-manager:
+    build:
+      context: .
+      args:
+        OXIDIZED_VERSION: ${OXIDIZED_VERSION:-latest}
+    image: oxidized-manager:latest
+    container_name: oxidized-manager
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${MANAGER_PORT:-8080}:8080"
+    volumes:
+      # users, workspaces, Oxidized config / router.db / git history, backup destination clones
+      - ./data:/data

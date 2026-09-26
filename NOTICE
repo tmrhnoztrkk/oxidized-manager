@@ -1,0 +1,11 @@
+Oxidized Manager
+Copyright 2026 Oxidized Manager contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It builds on and ships with Oxidized (https://github.com/ytti/oxidized),
+Copyright Saku Ytti and the Oxidized contributors, licensed under the Apache License 2.0.
+The container image is based on the official oxidized/oxidized image; Oxidized itself is not modified.
+
+Third-party Python packages (FastAPI, Starlette, Uvicorn, httpx, websockets, ruamel.yaml,
+Paramiko, cryptography, itsdangerous) are used under their respective licenses.

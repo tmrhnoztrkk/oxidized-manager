@@ -1,0 +1,12 @@
+.env
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+node_modules/
+
+# Real Oxidized files contain passwords and tokens — never commit them
+/config
+/router.db
+/Config.txt
