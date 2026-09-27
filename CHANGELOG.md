@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.1
+
+- **Data survives updates:** data now lives in the named Docker volume `oxidized-manager-data` instead of `./data`, so updating, `docker compose down` or cloning into another folder no longer starts an empty installation. An existing `./data` is copied into the volume on the first start.
+- `.env` is optional: `docker compose up` works without it.
+- The sidebar menu button now collapses the sidebar on wide screens (remembered per browser); on narrow screens tapping the page closes the open sidebar.
+
 ## 3.0.0 — first public release
 
 - **Workspaces**

@@ -4,6 +4,12 @@ set -e
 DATA_DIR="${DATA_DIR:-/data}"
 mkdir -p "$DATA_DIR"
 if [ "$(id -u)" = "0" ]; then
+  # One-time migration: data used to be a ./data bind mount, now it is a named volume
+  if [ -z "$(ls -A "$DATA_DIR")" ] && [ -d /legacy-data ] && [ -n "$(ls -A /legacy-data)" ]; then
+    echo "Migrating the old ./data directory into $DATA_DIR"
+    cp -a /legacy-data/. "$DATA_DIR/"
+    chown -R oxidized:oxidized "$DATA_DIR"
+  fi
   # Bind mounts are created as root; only fix ownership when it differs (fast start with large git repos)
   if [ "$(stat -c %u "$DATA_DIR")" != "30000" ]; then
     chown -R oxidized:oxidized "$DATA_DIR"

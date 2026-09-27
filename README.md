@@ -62,7 +62,7 @@ You need Docker with the compose plugin.
 ```bash
 git clone https://github.com/tmrhnoztrkk/oxidized-manager.git
 cd oxidized-manager
-cp .env.example .env
+cp .env.example .env    # optional, every setting has a default
 docker compose up -d --build
 ```
 
@@ -75,7 +75,29 @@ Open `http://SERVER:8080`. The first visit starts a setup wizard with three step
    - **Skip for now.** Opens the panel without a workspace; add workspaces and users later under *Administration*.
 3. **Done.** Add devices, users and backup destinations.
 
-Everything is stored in `./data`. Back up this directory, including `data/.secret_key`: stored tokens cannot be decrypted without it.
+### Data, updates and backups
+
+Everything (users, workspaces, Oxidized configuration and git history, `.secret_key`) is stored in the Docker volume `oxidized-manager-data`, not in the project folder. Updates, `docker compose down`, or a fresh clone in another folder keep it.
+
+Update:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+> [!WARNING]
+> `docker compose down -v` and `docker volume rm oxidized-manager-data` delete all data.
+
+Back up the volume, including `.secret_key`: stored tokens cannot be decrypted without it.
+
+```bash
+docker run --rm -v oxidized-manager-data:/data -v "$PWD":/backup alpine tar czf /backup/oxmgr-data.tgz -C /data .
+# restore into an empty volume:
+docker run --rm -v oxidized-manager-data:/data -v "$PWD":/backup alpine tar xzf /backup/oxmgr-data.tgz -C /data
+```
+
+Up to 3.0.0 the data was stored in `./data`. On the first start with an empty volume, an existing `./data` in the project folder is copied into the volume automatically. `./data` itself is left untouched.
 
 ## Concepts
 
@@ -184,7 +206,7 @@ Set these in `.env`. All are optional.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SECRET_KEY` | generated in `data/.secret_key` | Signs sessions and encrypts stored secrets |
+| `SECRET_KEY` | generated in `.secret_key` in the data volume | Signs sessions and encrypts stored secrets |
 | `MANAGER_PORT` | `8080` | Published port |
 | `SESSION_HOURS` | `12` | Session lifetime |
 | `SECURE_COOKIES` | `false` | Set `true` behind HTTPS |

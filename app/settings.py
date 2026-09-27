@@ -4,7 +4,7 @@ import secrets
 import shutil
 from pathlib import Path
 
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)

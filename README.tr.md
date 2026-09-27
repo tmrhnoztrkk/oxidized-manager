@@ -50,7 +50,7 @@ Docker ve compose eklentisi gerekir.
 ```bash
 git clone https://github.com/tmrhnoztrkk/oxidized-manager.git
 cd oxidized-manager
-cp .env.example .env
+cp .env.example .env    # isteğe bağlı, her ayarın varsayılanı var
 docker compose up -d --build
 ```
 
@@ -63,7 +63,29 @@ docker compose up -d --build
    - **Şimdilik atla.** Panel workspace olmadan açılır; workspace ve kullanıcıları sonra *Yönetim* bölümünden eklersiniz.
 3. Cihazları, kullanıcıları ve yedek hedeflerini ekleyin.
 
-Tüm veriler `./data` altında durur. Bu dizini `data/.secret_key` dahil yedekleyin; bu dosya olmadan kayıtlı token'lar çözülemez.
+### Veriler, güncelleme ve yedekleme
+
+Tüm veriler (kullanıcılar, workspace'ler, Oxidized ayarları ve git geçmişi, `.secret_key`) proje klasöründe değil, `oxidized-manager-data` adlı Docker volume'unda durur. Güncelleme, `docker compose down` veya başka bir klasöre yeniden clone'lamak verileri silmez.
+
+Güncelleme:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+> [!WARNING]
+> `docker compose down -v` ve `docker volume rm oxidized-manager-data` tüm verileri siler.
+
+Volume'u `.secret_key` dahil yedekleyin; bu dosya olmadan kayıtlı token'lar çözülemez.
+
+```bash
+docker run --rm -v oxidized-manager-data:/data -v "$PWD":/backup alpine tar czf /backup/oxmgr-data.tgz -C /data .
+# boş bir volume'a geri yüklemek için:
+docker run --rm -v oxidized-manager-data:/data -v "$PWD":/backup alpine tar xzf /backup/oxmgr-data.tgz -C /data
+```
+
+3.0.0'a kadar veriler `./data` altında tutuluyordu. Volume boşken yapılan ilk açılışta proje klasöründeki `./data` otomatik olarak volume'a kopyalanır. `./data` klasörünün kendisine dokunulmaz.
 
 ## Kavramlar
 
@@ -134,7 +156,7 @@ Gönderim kuralları:
 
 | Değişken | Varsayılan | Açıklama |
 |---|---|---|
-| `SECRET_KEY` | `data/.secret_key` içinde üretilir | Oturumları imzalar, kayıtlı sırları şifreler |
+| `SECRET_KEY` | Veri volume'unda `.secret_key` içinde üretilir | Oturumları imzalar, kayıtlı sırları şifreler |
 | `MANAGER_PORT` | `8080` | Yayın portu |
 | `SECURE_COOKIES` | `false` | HTTPS arkasında `true` yapın |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Güvenilen reverse proxy adresi |

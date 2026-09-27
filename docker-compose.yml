@@ -1,8 +1,12 @@
 # Oxidized Manager — one container: web UI + API, optional embedded Oxidized, backup destinations.
 #
-#   cp .env.example .env
+#   cp .env.example .env        (optional — every setting has a default)
 #   docker compose up -d --build
 #   → http://SERVER:8080  (the setup wizard opens on first visit)
+#
+# Update:  git pull && docker compose up -d --build
+# Data lives in the Docker volume "oxidized-manager-data", not in this folder: it survives updates,
+# "docker compose down" and a fresh clone elsewhere. Only "docker compose down -v" deletes it.
 
 services:
   oxidized-manager:
@@ -13,9 +17,18 @@ services:
     image: oxidized-manager:latest
     container_name: oxidized-manager
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "${MANAGER_PORT:-8080}:8080"
     volumes:
-      # users, workspaces, Oxidized config / router.db / git history, backup destination clones
-      - ./data:/data
+      # users, workspaces, Oxidized config / router.db / git history, backup destination clones, .secret_key
+      - oxidized-manager-data:/data
+      # Before 3.0.1 the data lived in ./data. It is copied into the volume once, on the first start
+      # with an empty volume, and ignored afterwards.
+      - ./data:/legacy-data:ro
+
+volumes:
+  oxidized-manager-data:
+    name: oxidized-manager-data
