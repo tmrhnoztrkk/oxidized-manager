@@ -359,7 +359,12 @@ export async function boot() {
   state.role = me.role;
   await loadWorkspaces();
   state.models = await api.get('/api/models').catch(() => []);
-  if (!state.workspaces.length && isAdmin()) { renderWorkspaceChooser(); return; }
+  // Offer the workspace chooser only on a fresh start: not after "Skip for now" and not on a reload of a page
+  // (e.g. after switching the language), so the admin stays where they were
+  let skipped = false;
+  try { skipped = localStorage.getItem('oxmgr-skip-chooser') === '1'; } catch (e) { /* storage blocked */ }
+  const onPage = !['', '#', '#/'].includes(location.hash);
+  if (!state.workspaces.length && isAdmin() && !skipped && !onPage) { renderWorkspaceChooser(); return; }
   renderShell();
   route();
 }

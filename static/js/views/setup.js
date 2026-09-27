@@ -69,7 +69,11 @@ export function renderWorkspaceChooser(step = 0) {
   </div>`;
   $$('[data-c]', body).forEach((b) => {
     b.onclick = () => {
-      if (b.dataset.c === 'skip') { enterApp(null); return; }
+      if (b.dataset.c === 'skip') {
+        try { localStorage.setItem('oxmgr-skip-chooser', '1'); } catch (e) { /* storage blocked */ }
+        enterApp(null);
+        return;
+      }
       if (b.dataset.c === 'local') {
         const f = frame(step ? 3 : 0, step ? 3 : 0, t('Embedded Oxidized'), esc(t('Basic settings. Everything can be changed later under "Oxidized settings".')));
         localWizard(f, { onDone: (ws) => enterApp(ws.id), onBack: () => renderWorkspaceChooser(step) });
