@@ -35,6 +35,7 @@ English: [README.md](README.md)
   - Başka sunuculardaki Oxidized'ler HTTPS + API anahtarıyla yönetilir. SSH tüneli gerekmez.
 - **Kullanıcılar**
   - Yöneticiler ve kullanıcılar; her workspace için izleyici, operatör veya yönetici rolü.
+  - Ad, e-posta ve Gravatar fotoğrafı içeren profil; kendi SMTP sunucunuz üzerinden e-postayla şifre sıfırlama.
   - Denetim kaydı.
 - **Yedek hedefleri**
   - GitHub, GitLab, Gitea/Forgejo, herhangi bir HTTPS git sunucusu veya üretilen deploy key ile herhangi bir SSH git sunucusu.
@@ -128,6 +129,12 @@ Erişim iki yerden verilir:
 - **Workspace kartındaki "Paylaş" düğmesi:** o workspace'e kullanıcı eklenir veya çıkarılır. Bunu workspace yöneticileri de yapabilir.
 
 Pasifleştirilen hesabın oturumları anında sonlanır.
+
+### Profil ve şifre sıfırlama
+
+- **Profil.** Sol alttaki hesap menüsünden (**Profilim**) ad, soyad, e-posta adresi ve şifre değiştirilir. E-posta adresinin [Gravatar](https://gravatar.com) fotoğrafı varsa o gösterilir, yoksa baş harfler gösterilir. Yöneticiler bu alanları *Kullanıcılar & erişim* ekranından da düzenleyebilir.
+- **Şifremi unuttum.** Giriş ekranında kullanıcı adı veya e-posta adresi girilir; bir saat geçerli ve tek kullanımlık bir bağlantı gönderilir. Hesap var olsun ya da olmasın aynı yanıt verilir ve her hesaba dakikada en fazla bir e-posta gider.
+- **Kurulum.** **Yönetim → E-posta (SMTP)** ekranında e-posta sunucusu (STARTTLS, SSL/TLS veya şifrelemesiz), gönderen ve bağlantıların yönleneceği panel adresi girilir, ardından **Test e-postası gönder** ile denenir. Bağlantı alabilmek için kullanıcının profilinde e-posta adresi olmalıdır. SMTP ayarlanmamışsa giriş ekranı kullanıcıyı bir yöneticiye yönlendirir.
 
 ## Yedek hedefleri
 

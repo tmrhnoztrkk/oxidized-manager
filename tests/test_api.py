@@ -1,6 +1,11 @@
+import hashlib
+import re
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app import mailer, settings
 from app.main import app
 
 
@@ -106,3 +111,88 @@ def test_destination_validation(admin):
     assert d["web_url"] == "https://github.com/acme/backups/tree/main"
     k = admin.post("/api/keygen").json()
     assert k["public_key"].startswith("ssh-ed25519") and k["sealed"].startswith("enc:")
+
+
+def test_profile_and_gravatar(admin):
+    r = admin.put("/api/profile", json={"first_name": "Ada", "last_name": "Lovelace", "email": " Ada@Example.com "})
+    assert r.status_code == 200
+    assert r.json()["avatar"] == hashlib.sha256(b"ada@example.com").hexdigest()
+    me = admin.get("/api/auth/me").json()
+    assert me["profile"]["first_name"] == "Ada" and me["profile"]["email"] == "Ada@Example.com"
+    assert admin.put("/api/profile", json={"email": "not-an-address"}).status_code == 400
+    # e-mail addresses are unique (case-insensitive), because they identify the account for a reset
+    carol = admin.post("/api/users", json={"username": "carol", "password": "carol-pass", "email": "carol@example.com"}).json()
+    assert carol["email"] == "carol@example.com"
+    assert admin.put("/api/profile", json={"email": "CAROL@example.com"}).status_code == 400
+    assert admin.put(f"/api/users/{carol['id']}", json={"first_name": "Carol"}).json()["first_name"] == "Carol"
+
+
+def test_smtp_settings_hide_the_password(admin):
+    assert TestClient(app).get("/api/auth/me").json()["reset_enabled"] is False
+    body = {"host": "smtp.example.com", "port": 587, "security": "starttls", "username": "mailer",
+            "password": "smtp-secret", "from_email": "noreply@example.com", "public_url": "https://oxmgr.example.com/"}
+    assert admin.put("/api/settings/smtp", json={**body, "public_url": ""}).status_code == 400
+    r = admin.put("/api/settings/smtp", json=body)
+    assert r.status_code == 200 and "smtp-secret" not in r.text and r.json()["has_password"] is True
+    assert r.json()["public_url"] == "https://oxmgr.example.com"
+    # an empty password keeps the stored one
+    admin.put("/api/settings/smtp", json={**body, "password": ""})
+    assert mailer.load(reveal=True)["password"] == "smtp-secret"
+    assert TestClient(app).get("/api/auth/me").json()["reset_enabled"] is True
+    assert login("carol", "carol-pass").get("/api/settings/smtp").status_code == 403
+
+
+def test_forgot_and_reset_password(admin, monkeypatch):
+    sent = []
+    monkeypatch.setattr(mailer, "send", lambda to, subject, text, cfg=None: sent.append((to, text)))
+    anon = TestClient(app)
+    carol_old = login("carol", "carol-pass")  # an open session elsewhere, e.g. on a stolen laptop
+    # unknown accounts get the same answer and no e-mail
+    assert anon.post("/api/auth/forgot", json={"login": "nobody"}).json() == {"ok": True}
+    assert sent == []
+    assert anon.post("/api/auth/forgot", json={"login": "carol@example.com"}).status_code == 200
+    assert len(sent) == 1 and sent[0][0] == "carol@example.com"
+    link = re.search(r"https://oxmgr\.example\.com/#/reset/(\S+)", sent[0][1])
+    assert link, sent[0][1]
+    token = link.group(1)
+    # at most one e-mail per minute
+    anon.post("/api/auth/forgot", json={"login": "carol"})
+    assert len(sent) == 1
+    assert anon.get(f"/api/auth/reset/{token}").json() == {"user": "carol"}
+    assert anon.post("/api/auth/reset", json={"token": token, "password": "short"}).status_code == 400
+    assert anon.post("/api/auth/reset", json={"token": token, "password": "carol-new-pass"}).status_code == 200
+    # the reset signs the account out everywhere
+    assert carol_old.get("/api/workspaces").status_code == 401
+    assert carol_old.get("/api/auth/me").json()["user"] is None
+    login("carol", "carol-new-pass")
+    # the link works only once
+    assert anon.post("/api/auth/reset", json={"token": token, "password": "another-pass"}).status_code == 400
+    assert anon.get("/api/auth/reset/wrong-token").status_code == 400
+
+
+def test_password_change_signs_out_other_sessions(admin):
+    dave = admin.post("/api/users", json={"username": "dave", "password": "dave-pass-1"}).json()
+    laptop, phone = login("dave", "dave-pass-1"), login("dave", "dave-pass-1")
+    # own change: this browser stays signed in, the others are signed out
+    assert laptop.put("/api/users/me/password", json={"current": "dave-pass-1", "new": "dave-pass-2"}).status_code == 200
+    assert laptop.get("/api/workspaces").status_code == 200
+    assert phone.get("/api/workspaces").status_code == 401
+    # an administrator setting a new password signs the user out everywhere
+    assert admin.put(f"/api/users/{dave['id']}", json={"password": "dave-pass-3"}).status_code == 200
+    assert laptop.get("/api/workspaces").status_code == 401
+    login("dave", "dave-pass-3")
+    # ...but not the administrator's own session when they change their own password there
+    me = next(u for u in admin.get("/api/users").json() if u["username"] == "admin")
+    assert admin.put(f"/api/users/{me['id']}", json={"password": "admin-pass-2"}).status_code == 200
+    assert admin.get("/api/users").status_code == 200
+    # a too short password is rejected before anything is changed
+    assert admin.put(f"/api/users/{dave['id']}", json={"password": "short", "first_name": "Dave"}).status_code == 400
+    assert next(u for u in admin.get("/api/users").json() if u["username"] == "dave")["first_name"] == ""
+
+
+def test_version_is_the_same_everywhere():
+    root = Path(__file__).resolve().parent.parent
+    v = settings.VERSION
+    assert f"image: oxidized-manager:{v}" in (root / "docker-compose.yml").read_text()
+    assert f'org.opencontainers.image.version="{v}"' in (root / "Dockerfile").read_text()
+    assert f"## {v}" in (root / "CHANGELOG.md").read_text()

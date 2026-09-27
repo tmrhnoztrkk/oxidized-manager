@@ -5,7 +5,8 @@ FROM docker.io/oxidized/oxidized:${OXIDIZED_VERSION}
 
 LABEL org.opencontainers.image.title="Oxidized Manager" \
       org.opencontainers.image.description="Multi-workspace web UI for Oxidized: device management, sharing, git backup destinations" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="3.1.0"
 
 USER root
 # git + openssh-client are used by backup destinations (git push over HTTPS / SSH)

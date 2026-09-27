@@ -14,7 +14,7 @@ services:
       context: .
       args:
         OXIDIZED_VERSION: ${OXIDIZED_VERSION:-latest}
-    image: oxidized-manager:latest
+    image: oxidized-manager:3.1.0
     container_name: oxidized-manager
     restart: unless-stopped
     env_file:

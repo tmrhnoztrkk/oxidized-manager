@@ -1,8 +1,8 @@
 // Administration › Users & access: accounts, global role and per-workspace access
 import { api } from '../api.js';
 import { t } from '../i18n.js';
-import { roleBadge, ROLES, state, WS_TYPES } from '../app.js';
-import { $, $$, confirmDialog, empty, esc, fmtDate, icon, modal, pwField, setBusy, timeAgo, toast, toastError } from '../ui.js';
+import { renderUserChip, roleBadge, ROLES, state, WS_TYPES } from '../app.js';
+import { $, $$, avatar, confirmDialog, displayName, empty, esc, fmtDate, icon, modal, pwField, setBusy, timeAgo, toast, toastError } from '../ui.js';
 
 export async function render(view) {
   const load = async () => {
@@ -20,8 +20,9 @@ export async function render(view) {
             return w ? `<span class="badge outline" title="${esc(t(WS_TYPES[w.type]?.label || ''))}">${icon(WS_TYPES[w.type]?.icon || 'box')} ${esc(w.name)} · ${esc(t(ROLES[r]?.label || r))}</span>` : '';
           }).join(' ');
           return `<tr>
-            <td><b>${esc(u.username)}</b>${u.username === state.user ? ` <span class="badge primary">${esc(t('you'))}</span>` : ''}
-              ${u.disabled ? ` <span class="badge danger">${esc(t('disabled'))}</span>` : ''}<div class="sub-cell">${esc(t('created'))} ${fmtDate(u.created_at)}</div></td>
+            <td><div class="row" style="gap:10px;flex-wrap:nowrap">${avatar(u, u.username, 32)}<div>
+              <b>${esc(displayName(u, u.username))}</b>${displayName(u, u.username) !== u.username ? ` <span class="muted">${esc(u.username)}</span>` : ''}${u.username === state.user ? ` <span class="badge primary">${esc(t('you'))}</span>` : ''}
+              ${u.disabled ? ` <span class="badge danger">${esc(t('disabled'))}</span>` : ''}<div class="sub-cell">${u.email ? `${icon('mail')} ${esc(u.email)} · ` : ''}${esc(t('created'))} ${fmtDate(u.created_at)}</div></div></div></td>
             <td>${u.role === 'admin' ? `<span class="badge primary">${icon('shield')} ${esc(t('Admin'))}</span>` : `<span class="badge">${esc(t('User'))}</span>`}</td>
             <td class="small">${u.role === 'admin' ? `<span class="muted">${esc(t('all workspaces'))}</span>` : (access || `<span class="muted">${esc(t('no access yet'))}</span>`)}</td>
             <td class="small nowrap">${u.last_login ? `<span title="${esc(fmtDate(u.last_login))}">${timeAgo(u.last_login)}</span>` : `<span class="muted">${esc(t('never'))}</span>`}</td>
@@ -50,6 +51,9 @@ function userForm(u, onDone) {
   const body = document.createElement('div');
   body.innerHTML = `<form class="stack" autocomplete="off">
     <div class="grid c2">
+      <div class="field"><label>${esc(t('First name'))}</label><input class="input" id="uf-first" value="${esc(u?.first_name || '')}" maxlength="64"></div>
+      <div class="field"><label>${esc(t('Last name'))}</label><input class="input" id="uf-last" value="${esc(u?.last_name || '')}" maxlength="64"></div>
+      <div class="field"><label>${esc(t('E-mail'))} <span class="muted small">(${esc(t('for password reset'))})</span></label><input class="input" type="email" id="uf-email" value="${esc(u?.email || '')}" placeholder="name@example.com"></div>
       <div class="field"><label>${esc(t('Username'))} *</label><input class="input" id="uf-name" value="${esc(u?.username || '')}" ${isNew ? '' : 'disabled'}></div>
       <div class="field"><label>${esc(isNew ? t('Password') : t('New password'))} ${isNew ? '*' : `<span class="muted small">(${esc(t('leave empty to keep'))})</span>`}</label>${pwField('uf-pass', { placeholder: t('at least 8 characters') })}</div>
       <div class="field"><label>${esc(t('Role'))}</label><select class="select" id="uf-role" ${self ? 'disabled' : ''}>
@@ -80,7 +84,8 @@ function userForm(u, onDone) {
   m.foot.querySelector('[data-a=yes]').onclick = async (e) => {
     const acc = {};
     $$('[data-ws]', body).forEach((s) => { if (s.value) acc[s.dataset.ws] = s.value; });
-    const payload = { role: $('#uf-role', body).value, access: acc };
+    const payload = { role: $('#uf-role', body).value, access: acc,
+      first_name: $('#uf-first', body).value, last_name: $('#uf-last', body).value, email: $('#uf-email', body).value };
     const pw = $('#uf-pass', body).value;
     setBusy(e.currentTarget, true);
     try {
@@ -91,7 +96,8 @@ function userForm(u, onDone) {
         if (!self) payload.disabled = !$('#uf-active', body).checked;
         if (self) delete payload.role;
         if (pw) payload.password = pw;
-        await api.put(`/api/users/${u.id}`, payload);
+        const saved = await api.put(`/api/users/${u.id}`, payload);
+        if (self) { state.me.profile = { first_name: saved.first_name, last_name: saved.last_name, email: saved.email, avatar: saved.avatar }; renderUserChip(); }
         toast(t('User updated'), 'success');
       }
       m.close();

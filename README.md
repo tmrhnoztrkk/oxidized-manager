@@ -48,6 +48,7 @@ Türkçe: [README.tr.md](README.tr.md)
   - Manage Oxidized on other servers over HTTPS with an API key. No SSH tunnel is needed.
 - **Users**
   - Administrators and users, with a viewer, operator or manager role per workspace.
+  - Profile with name, e-mail and Gravatar photo; password reset by e-mail over your SMTP server.
   - Audit log.
 - **Backup destinations**
   - Scheduled or on-demand pushes to GitHub, GitLab, Gitea/Forgejo, any HTTPS git server, or any SSH git server with a generated deploy key.
@@ -160,6 +161,12 @@ There are two places to set access:
 
 Disabling an account ends its sessions immediately.
 
+### Profile and password reset
+
+- **Profile.** The account menu at the bottom left (**My profile**) edits the first and last name, the e-mail address and the password. When the e-mail address has a [Gravatar](https://gravatar.com), its photo is shown; otherwise the initials are. Administrators can also set these fields under *Users & access*.
+- **Forgot your password?** On the sign-in page, a user enters their username or e-mail address and receives a link that is valid for one hour and works once. The answer is the same whether or not the account exists, and each account gets at most one e-mail per minute.
+- **Setup.** Under **Administration → E-mail (SMTP)**, enter the mail server (STARTTLS, SSL/TLS or none), the sender and the panel address that the links point to, then use **Send test e-mail**. Users need an e-mail address in their profile to receive a link; without SMTP the sign-in page asks them to contact an administrator.
+
 ## Backup destinations
 
 ![Backup destinations](docs/screenshots/destinations.png)
@@ -220,7 +227,8 @@ Set these in `.env`. All are optional.
 
 - **HTTPS.** Publish the panel behind a TLS reverse proxy (nginx, Traefik, Caddy) and set `SECURE_COOKIES=true` and `FORWARDED_ALLOW_IPS`. This matters especially when remote workspaces connect over the internet.
 - **Passwords.** Panel passwords are hashed with scrypt.
-- **Stored secrets.** Remote API keys, git tokens and SSH keys are stored encrypted (Fernet).
+- **Stored secrets.** Remote API keys, git tokens, SSH keys and the SMTP password are stored encrypted (Fernet).
+- **Password reset links.** They are single-use, expire after one hour and are stored only as SHA-256 hashes. They point to the configured panel address, never to the address of the request.
 - **API keys.** They are stored as SHA-256 hashes and shown only once.
 - **Audit log.** Revealing a device or group password and exporting with passwords are both recorded.
 - **Permissions.** Every workspace request is checked centrally against the caller's role before it reaches Oxidized or is proxied to a remote installation.

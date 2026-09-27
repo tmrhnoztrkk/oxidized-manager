@@ -95,8 +95,8 @@ def session_identity(session):
     if not name:
         return None
     u = db.get_user(name)
-    if not u or u["disabled"]:
-        return None
+    if not u or u["disabled"] or session.get("gen", 0) != u["session_gen"]:
+        return None  # unknown, disabled, or signed out by a password change
     return Identity(u["username"], user=u)
 
 

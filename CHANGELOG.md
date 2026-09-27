@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.1.0
+
+- **Profile:** the account menu at the bottom left has *My profile* (first/last name, e-mail, password) and *Sign out*, plus a one-click sign-out button. The avatar is the Gravatar photo of the e-mail address, or the initials.
+- **Forgot your password?** on the sign-in page: a single-use reset link, valid for one hour, is e-mailed to the account's address.
+- **Administration → E-mail (SMTP):** mail server settings with a test e-mail button. The SMTP password is stored encrypted.
+- Administrators can set the name and e-mail of users under *Users & access*.
+- **A password change signs the account out everywhere:** after a reset by e-mail or a new password set by an administrator, every open session of the user ends; when users change their own password, only the browser they use stays signed in.
+- The local image is tagged `oxidized-manager:3.1.0`.
+- Fixed: the account menu opened below the bottom of the screen, so clicking it seemed to do nothing.
+- Fixed: switching the language sent an administrator without workspaces back to the setup wizard.
+
 ## 3.0.1
 
 - **Data survives updates:** data now lives in the named Docker volume `oxidized-manager-data` instead of `./data`, so updating, `docker compose down` or cloning into another folder no longer starts an empty installation. An existing `./data` is copied into the volume on the first start.

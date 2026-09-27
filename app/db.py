@@ -1,4 +1,5 @@
-"""SQLite persistence: users, workspaces, memberships, API tokens, backup destinations, audit log."""
+"""SQLite persistence: users, workspaces, memberships, API tokens, backup destinations, audit log,
+password reset tokens and installation settings (SMTP)."""
 import base64
 import hashlib
 import hmac
@@ -87,6 +88,17 @@ CREATE TABLE IF NOT EXISTS audit (
   detail TEXT
 );
 CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts);
+CREATE TABLE IF NOT EXISTS password_resets (
+  hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  expires REAL NOT NULL,
+  used REAL
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """)
 
 
@@ -97,6 +109,12 @@ def _migrate():
         _conn.execute("ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
     if "last_login" not in cols:
         _conn.execute("ALTER TABLE users ADD COLUMN last_login REAL")
+    for col in ("first_name", "last_name", "email"):
+        if col not in cols:
+            _conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    if "session_gen" not in cols:
+        # sessions carry this number; raising it signs the user out everywhere
+        _conn.execute("ALTER TABLE users ADD COLUMN session_gen INTEGER NOT NULL DEFAULT 0")
 
 
 _migrate()
@@ -149,7 +167,7 @@ def check_password(pw, stored):
 
 
 # ------------------------------------------------------------------ users
-USER_COLS = "id, username, role, disabled, created_at, last_login"
+USER_COLS = "id, username, role, disabled, created_at, last_login, first_name, last_name, email, session_gen"
 
 
 def user_count():
@@ -186,19 +204,79 @@ def update_user(uid, role=None, disabled=None):
         x("UPDATE users SET disabled=? WHERE id=?", (1 if disabled else 0, uid))
 
 
+def update_profile(uid, first_name, last_name, email):
+    x("UPDATE users SET first_name=?, last_name=?, email=? WHERE id=?", (first_name, last_name, email, uid))
+
+
+def user_by_email(email):
+    return q(f"SELECT {USER_COLS} FROM users WHERE email != '' AND lower(email)=lower(?)", (email,), one=True)
+
+
 def set_password(uid, password):
-    x("UPDATE users SET pw_hash=? WHERE id=?", (hash_password(password), uid))
+    """Sets a new password and ends every session of the user; returns the new session generation."""
+    with _lock:
+        x("UPDATE users SET pw_hash=?, session_gen=session_gen+1 WHERE id=?", (hash_password(password), uid))
+        return q("SELECT session_gen FROM users WHERE id=?", (uid,), one=True)["session_gen"]
 
 
 def delete_user(uid):
     with _lock:
         x("DELETE FROM members WHERE user_id=?", (uid,))
+        x("DELETE FROM password_resets WHERE user_id=?", (uid,))
         x("DELETE FROM users WHERE id=?", (uid,))
 
 
 def admin_count(active_only=True):
     sql = "SELECT COUNT(*) AS n FROM users WHERE role='admin'" + (" AND disabled=0" if active_only else "")
     return q(sql, one=True)["n"]
+
+
+# ------------------------------------------------------------------ password reset
+def _reset_hash(tok):
+    return hashlib.sha256(tok.encode()).hexdigest()
+
+
+def create_reset(uid, ttl):
+    """Returns a new single-use reset token; only its hash is stored."""
+    tok = secrets.token_urlsafe(32)
+    now = time.time()
+    with _lock:
+        x("DELETE FROM password_resets WHERE expires < ? OR used IS NOT NULL", (now,))
+        x("INSERT INTO password_resets(hash, user_id, created_at, expires) VALUES (?,?,?,?)",
+          (_reset_hash(tok), uid, now, now + ttl))
+    return tok
+
+
+def last_reset(uid):
+    r = q("SELECT MAX(created_at) AS t FROM password_resets WHERE user_id=?", (uid,), one=True)
+    return r["t"] if r else None
+
+
+def reset_user(tok):
+    """The user a valid (unused, unexpired) reset token belongs to, or None."""
+    r = q("SELECT * FROM password_resets WHERE hash=?", (_reset_hash(tok or ""),), one=True)
+    if not r or r["used"] or r["expires"] < time.time():
+        return None
+    return get_user(uid=r["user_id"])
+
+
+def use_reset(tok, uid):
+    """Marks the token used and cancels every other open token of the user."""
+    now = time.time()
+    with _lock:
+        x("UPDATE password_resets SET used=? WHERE hash=?", (now, _reset_hash(tok)))
+        x("DELETE FROM password_resets WHERE user_id=? AND used IS NULL", (uid,))
+
+
+# ------------------------------------------------------------------ installation settings
+def get_setting(key, default=None):
+    r = q("SELECT value FROM app_settings WHERE key=?", (key,), one=True)
+    return json.loads(r["value"]) if r else default
+
+
+def set_setting(key, value):
+    x("INSERT INTO app_settings(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      (key, json.dumps(value)))
 
 
 # ------------------------------------------------------------------ memberships

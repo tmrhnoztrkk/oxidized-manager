@@ -1,15 +1,17 @@
-"""Setup, authentication, users & sharing, API keys, workspaces and the audit log."""
+"""Setup, authentication (incl. password reset by e-mail), users, profile & sharing, API keys, SMTP settings,
+workspaces and the audit log."""
 import asyncio
+import hashlib
 import json
 import re
 import time
 import uuid
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
 
-from . import db, files, oxconfig, settings
+from . import db, files, mailer, oxconfig, settings
 from .deps import admin, identity, need_role, session_user
-from .i18n import _
+from .i18n import _, current as current_lang, set_lang
 from .perms import Identity
 from .routerdb import RouterDB
 from .supervisor import local_supervisor
@@ -17,6 +19,9 @@ from .workspace import Ctx, agent_info
 
 router = APIRouter()
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+RESET_TTL = 3600          # a reset link is valid for one hour
+RESET_INTERVAL = 60       # at most one reset e-mail per user per minute
 
 
 def _check_username(u):
@@ -27,6 +32,27 @@ def _check_username(u):
 def _check_password(p):
     if len(p or "") < 8:
         raise HTTPException(400, _("Password must be at least 8 characters"))
+
+
+def _profile_fields(body, user=None):
+    """Validated first name, last name and e-mail from a request body; fields left out keep ``user``'s values."""
+    def field(k):
+        return str(body[k] if k in body else (user or {}).get(k) or "").strip()
+    uid = user["id"] if user else None
+    first, last, email = field("first_name"), field("last_name"), field("email")
+    if len(first) > 64 or len(last) > 64:
+        raise HTTPException(400, _("Names can be at most 64 characters"))
+    if email:
+        if len(email) > 254 or not EMAIL_RE.match(email):
+            raise HTTPException(400, _("Enter a valid e-mail address"))
+        other = db.user_by_email(email)
+        if other and other["id"] != uid:
+            raise HTTPException(400, _("This e-mail address is already used by another user"))
+    return first, last, email
+
+
+def gravatar_hash(email):
+    return hashlib.sha256(email.strip().lower().encode()).hexdigest() if email else None
 
 
 # ====================================================================== setup & auth
@@ -44,7 +70,7 @@ async def setup(request: Request, body: dict = Body(...)):
     _check_username(u)
     _check_password(p)
     db.create_user(u, p, role="admin")
-    request.session["user"] = u
+    request.session.update(user=u, gen=0)
     db.audit(u, "setup")
     return {"user": u}
 
@@ -53,7 +79,7 @@ async def setup(request: Request, body: dict = Body(...)):
 async def login(request: Request, body: dict = Body(...)):
     u = db.authenticate(str(body.get("username", "")), str(body.get("password", "")))
     if u:
-        request.session["user"] = u["username"]
+        request.session.update(user=u["username"], gen=u["session_gen"])
         db.audit(u["username"], "login")
         return {"user": u["username"]}
     await asyncio.sleep(1.0)
@@ -70,16 +96,72 @@ async def logout(request: Request):
 async def me(request: Request):
     ident = getattr(request.state, "identity", None)
     user = ident.user if ident and ident.user else None
+    profile = {k: user[k] for k in ("first_name", "last_name", "email")} if user else {}
+    if user:
+        profile["avatar"] = gravatar_hash(user["email"])
     return {"user": user["username"] if user else None, "role": user["role"] if user else None,
+            "profile": profile, "reset_enabled": mailer.enabled(),
             "needs_setup": db.user_count() == 0, "version": settings.VERSION,
             "has_local": db.get_workspace(settings.LOCAL_ID, reveal=False) is not None,
             "max_remote": settings.MAX_REMOTE_WORKSPACES, "remote_count": db.remote_count()}
 
 
+def _reset_mail(user, link, lang):
+    set_lang(lang)
+    name = " ".join(x for x in (user["first_name"], user["last_name"]) if x) or user["username"]
+    text = _("Hello {name},\n\nA password reset was requested for your Oxidized Manager account '{user}'.\n"
+             "Open this link within one hour to choose a new password:\n\n{link}\n\n"
+             "If you did not request this, you can ignore this e-mail; your password stays unchanged.",
+             name=name, user=user["username"], link=link)
+    try:
+        mailer.send(user["email"], _("Oxidized Manager password reset"), text)
+        db.audit(user["username"], "password:reset-mail")
+    except mailer.MailError as e:
+        db.audit(user["username"], "password:reset-mail-failed", detail={"error": str(e)})
+
+
+@router.post("/api/auth/forgot")
+async def forgot_password(tasks: BackgroundTasks, body: dict = Body(...)):
+    """Sends a reset link to the e-mail of the account. The answer never tells whether the account exists."""
+    if not mailer.enabled():
+        raise HTTPException(400, _("Password reset by e-mail is not available — ask an administrator"))
+    login_ = str(body.get("login") or "").strip()
+    u = db.user_by_email(login_) if "@" in login_ else None
+    u = u or (db.get_user(login_) if login_ else None)
+    if u and u["email"] and not u["disabled"] and time.time() - (db.last_reset(u["id"]) or 0) > RESET_INTERVAL:
+        base = mailer.load()["public_url"].rstrip("/")
+        link = f"{base}/#/reset/{db.create_reset(u['id'], RESET_TTL)}"
+        tasks.add_task(_reset_mail, u, link, current_lang())
+    await asyncio.sleep(0.5)
+    return {"ok": True}
+
+
+@router.get("/api/auth/reset/{token}")
+async def reset_check(token: str):
+    u = db.reset_user(token)
+    if not u or u["disabled"]:
+        raise HTTPException(400, _("This reset link is invalid or has expired — request a new one"))
+    return {"user": u["username"]}
+
+
+@router.post("/api/auth/reset")
+async def reset_password(body: dict = Body(...)):
+    token = str(body.get("token") or "")
+    u = db.reset_user(token)
+    if not u or u["disabled"]:
+        raise HTTPException(400, _("This reset link is invalid or has expired — request a new one"))
+    _check_password(body.get("password"))
+    db.set_password(u["id"], body["password"])
+    db.use_reset(token, u["id"])
+    db.audit(u["username"], "password:reset")
+    return {"ok": True, "user": u["username"]}
+
+
 # ====================================================================== users
 def _public_user(u, memberships=None):
-    out = {k: u[k] for k in ("id", "username", "role", "created_at", "last_login")}
+    out = {k: u[k] for k in ("id", "username", "role", "created_at", "last_login", "first_name", "last_name", "email")}
     out["disabled"] = bool(u["disabled"])
+    out["avatar"] = gravatar_hash(u["email"])
     if memberships is not None:
         out["access"] = memberships.get(u["id"], {})
     return out
@@ -126,7 +208,9 @@ async def add_user(body: dict = Body(...), ident: Identity = Depends(admin)):
     role = "admin" if body.get("role") == "admin" else "user"
     if db.get_user(u):
         raise HTTPException(400, _("This user already exists"))
+    profile = _profile_fields(body)
     uid = db.create_user(u, p, role)
+    db.update_profile(uid, *profile)
     if body.get("access"):
         _apply_access(uid, body["access"], ident.name)
     db.audit(ident.name, "user:create", target=u, detail={"role": role})
@@ -134,7 +218,7 @@ async def add_user(body: dict = Body(...), ident: Identity = Depends(admin)):
 
 
 @router.put("/api/users/{uid}")
-async def update_user(uid: int, body: dict = Body(...), ident: Identity = Depends(admin)):
+async def update_user(uid: int, request: Request, body: dict = Body(...), ident: Identity = Depends(admin)):
     target = db.get_user(uid=uid)
     if not target:
         raise HTTPException(404, _("User not found"))
@@ -147,15 +231,22 @@ async def update_user(uid: int, body: dict = Body(...), ident: Identity = Depend
         raise HTTPException(400, _("At least one active administrator is required"))
     if target["id"] == ident.user["id"] and (disabled or role == "user"):
         raise HTTPException(400, _("You cannot disable or demote your own account"))
-    db.update_user(uid, role=role, disabled=disabled)
+    profile = _profile_fields(body, target) if any(k in body for k in ("first_name", "last_name", "email")) else None
     if body.get("password"):
-        _check_password(body["password"])
-        db.set_password(uid, body["password"])
+        _check_password(body["password"])  # before any change is written
+    db.update_user(uid, role=role, disabled=disabled)
+    if profile:
+        db.update_profile(uid, *profile)
+    if body.get("password"):
+        # signs the user out everywhere — except the administrator's own current session
+        gen = db.set_password(uid, body["password"])
+        if target["id"] == ident.user["id"]:
+            request.session["gen"] = gen
         db.audit(ident.name, "user:password-reset", target=target["username"])
     if "access" in body:
         _apply_access(uid, body["access"] or {}, ident.name)
     db.audit(ident.name, "user:update", target=target["username"],
-             detail={k: body[k] for k in ("role", "disabled") if k in body})
+             detail={k: body[k] for k in ("role", "disabled", "email") if k in body})
     return _public_user(db.get_user(uid=uid), db.all_memberships())
 
 
@@ -174,12 +265,77 @@ async def remove_user(uid: int, ident: Identity = Depends(admin)):
 
 
 @router.put("/api/users/me/password")
-async def change_password(body: dict = Body(...), ident: Identity = Depends(session_user)):
+async def change_password(request: Request, body: dict = Body(...), ident: Identity = Depends(session_user)):
     if not db.authenticate(ident.user["username"], body.get("current", "")):
         raise HTTPException(400, _("The current password is wrong"))
     _check_password(body.get("new", ""))
-    db.set_password(ident.user["id"], body["new"])
+    # other browsers are signed out; this one stays signed in
+    request.session["gen"] = db.set_password(ident.user["id"], body["new"])
     db.audit(ident.name, "user:password")
+    return {"ok": True}
+
+
+@router.put("/api/profile")
+async def update_profile(body: dict = Body(...), ident: Identity = Depends(session_user)):
+    """The signed-in user edits their own name and e-mail."""
+    first, last, email = _profile_fields(body, ident.user)
+    db.update_profile(ident.user["id"], first, last, email)
+    db.audit(ident.name, "user:profile", detail={"email": email})
+    return {"first_name": first, "last_name": last, "email": email, "avatar": gravatar_hash(email)}
+
+
+# ====================================================================== e-mail (SMTP)
+def _smtp_fields(body):
+    cfg = {k: body.get(k, v) for k, v in mailer.DEFAULTS.items()}
+    cfg["host"] = str(cfg["host"] or "").strip()
+    cfg["from_email"] = str(cfg["from_email"] or "").strip()
+    cfg["public_url"] = str(cfg["public_url"] or "").strip().rstrip("/")
+    cfg["verify_tls"] = bool(cfg["verify_tls"])
+    try:
+        cfg["port"] = int(cfg["port"] or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, _("Invalid port")) from None
+    if not 0 < cfg["port"] < 65536:
+        raise HTTPException(400, _("Invalid port"))
+    if cfg["security"] not in mailer.SECURITY:
+        raise HTTPException(400, _("Invalid encryption setting"))
+    if cfg["host"]:
+        if not EMAIL_RE.match(cfg["from_email"]):
+            raise HTTPException(400, _("Enter a valid sender e-mail address"))
+        if not re.match(r"^https?://[^\s/]+", cfg["public_url"]):
+            raise HTTPException(400, _("Enter the panel address, e.g. https://oxidized.example.com"))
+    cfg["password"] = body.get("password") or ""
+    cfg["clear_password"] = bool(body.get("clear_password"))
+    return cfg
+
+
+@router.get("/api/settings/smtp")
+async def smtp_settings(_a: Identity = Depends(admin)):
+    return mailer.load()
+
+
+@router.put("/api/settings/smtp")
+async def save_smtp(body: dict = Body(...), ident: Identity = Depends(admin)):
+    mailer.save(_smtp_fields(body))
+    db.audit(ident.name, "smtp:update", detail={"host": body.get("host") or ""})
+    return mailer.load()
+
+
+@router.post("/api/settings/smtp/test")
+async def test_smtp(body: dict = Body(...), ident: Identity = Depends(admin)):
+    """Sends a test message with the settings in the form (unsaved changes included)."""
+    to = str(body.get("to") or "").strip()
+    if not EMAIL_RE.match(to):
+        raise HTTPException(400, _("Enter a valid e-mail address"))
+    cfg = _smtp_fields(body)
+    if not cfg["password"] and not cfg["clear_password"]:
+        cfg["password"] = mailer.load(reveal=True)["password"]
+    text = _("This is a test message from Oxidized Manager. The e-mail settings work.")
+    try:
+        await asyncio.to_thread(mailer.send, to, _("Oxidized Manager test e-mail"), text, cfg)
+    except mailer.MailError as e:
+        raise HTTPException(400, str(e)) from None
+    db.audit(ident.name, "smtp:test", detail={"to": to})
     return {"ok": True}
 
 

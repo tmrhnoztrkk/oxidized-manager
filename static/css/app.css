@@ -214,6 +214,7 @@ input[type="checkbox"] { accent-color: var(--primary); width: 15px; height: 15px
 .card-head .actions { margin-left: auto; display: flex; gap: 6px; }
 .card-body { padding: 18px; }
 .card-body.flush { padding: 0; }
+.card-foot { padding: 14px 18px; border-top: 1px solid var(--border); background: var(--surface-2); border-radius: 0 0 var(--radius) var(--radius); }
 
 .kpi { padding: 16px 18px; display: flex; flex-direction: column; gap: 6px; }
 .kpi .label { color: var(--muted); font-size: 12.5px; font-weight: 550; display: flex; align-items: center; gap: 7px; }
@@ -431,9 +432,14 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border-radius
 .choice.mini.active { border-color: var(--primary); background: var(--primary-soft); }
 
 /* ---------------------------------------------------------------- user menu, guides */
-.user-chip { display: flex; align-items: center; gap: 8px; width: 100%; height: 38px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.user-chip { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: 44px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
 .user-chip:hover { background: var(--surface-2); }
-.user-chip .ellipsis { flex: 1; text-align: left; }
+.user-chip .ellipsis { flex: 1; text-align: left; line-height: 1.2; }
+.user-chip b { display: block; overflow: hidden; text-overflow: ellipsis; }
+.user-chip .chip-sub { display: block; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.avatar { position: relative; flex: none; display: inline-grid; place-items: center; border-radius: 50%; overflow: hidden; font-weight: 700; color: #fff; background: linear-gradient(135deg, #6366f1, #06b6d4); }
+.avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--surface); }
+.login-card h2 { margin-bottom: -4px; }
 .terminal .t-success { color: #4ade80; font-weight: 600; }
 .steps-list { margin: 0; padding-left: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: 10px; }
 .steps-list li { counter-increment: step; position: relative; padding-left: 38px; line-height: 1.6; }

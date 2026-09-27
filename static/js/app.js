@@ -1,7 +1,7 @@
 // App shell: first-run setup, session, layout, workspace switching and the hash router
 import { api } from './api.js';
 import { getLang, LANGS, N_, setLang, t } from './i18n.js';
-import { $, applyTheme, dropdown, esc, getThemePref, h, icon, loader, modal, setBusy, toast, toastError } from './ui.js';
+import { $, applyTheme, avatar, displayName, dropdown, esc, getThemePref, h, icon, loader, modal, pwField, setBusy, toast, toastError } from './ui.js';
 import * as dashboard from './views/dashboard.js';
 import * as devices from './views/devices.js';
 import * as device from './views/device.js';
@@ -14,6 +14,7 @@ import * as workspaces from './views/workspaces.js';
 import * as users from './views/users.js';
 import * as access from './views/access.js';
 import * as audit from './views/audit.js';
+import * as mail from './views/mail.js';
 import { renderSetup, renderWorkspaceChooser } from './views/setup.js';
 
 export const state = {
@@ -64,6 +65,7 @@ const NAV = [
   { id: 'workspaces', href: '#/workspaces', label: N_('Workspaces'), icon: 'layers', admin: true },
   { id: 'users', href: '#/users', label: N_('Users & access'), icon: 'users', admin: true },
   { id: 'access', href: '#/access', label: N_('Remote access (API keys)'), icon: 'key', admin: true },
+  { id: 'mail', href: '#/mail', label: N_('E-mail (SMTP)'), icon: 'mail', admin: true },
   { id: 'audit', href: '#/audit', label: N_('Audit log'), icon: 'history', audit: true },
 ];
 
@@ -79,6 +81,7 @@ const ROUTES = [
   { re: /^#\/workspaces\/?$/, view: workspaces, nav: 'workspaces', admin: true },
   { re: /^#\/users\/?$/, view: users, nav: 'users', admin: true },
   { re: /^#\/access\/?$/, view: access, nav: 'access', admin: true },
+  { re: /^#\/mail\/?$/, view: mail, nav: 'mail', admin: true },
   { re: /^#\/audit\/?$/, view: audit, nav: 'audit' },
 ];
 
@@ -86,12 +89,13 @@ let cleanup = null;
 let routeSeq = 0;
 
 // ------------------------------------------------------------------ session
-function renderLogin() {
+function renderLogin({ username = '', notice = '' } = {}) {
   document.getElementById('root').innerHTML = '';
   const el = h(`<div class="login-wrap"><form class="card login-card stack" autocomplete="on">
     <div class="brand"><div class="brand-logo">Ox</div><div><div class="brand-name">Oxidized Manager</div><div class="brand-sub">${esc(t('Network configuration backup management'))}</div></div></div>
     <div class="field"><label>${esc(t('Username'))}</label><input class="input" name="username" autocomplete="username" required></div>
-    <div class="field"><label>${esc(t('Password'))}</label><input class="input" type="password" name="password" autocomplete="current-password" required></div>
+    <div class="field"><div class="row between"><label>${esc(t('Password'))}</label><a href="#" class="small" id="forgot-link">${esc(t('Forgot your password?'))}</a></div><input class="input" type="password" name="password" autocomplete="current-password" required></div>
+    ${notice ? `<div class="alert success">${icon('checkCircle')}<div class="alert-body">${esc(notice)}</div></div>` : ''}
     <div class="alert danger" id="login-err" style="display:none">${icon('alert')}<div class="alert-body"></div></div>
     <button class="btn primary" type="submit" style="height:38px">${esc(t('Sign in'))}</button>
     <div class="row between small muted"><div class="btn-group" data-lang-btns></div><div class="btn-group" data-theme-btns></div></div>
@@ -100,7 +104,9 @@ function renderLogin() {
   themeButtons(el.querySelector('[data-theme-btns]'));
   langButtons(el.querySelector('[data-lang-btns]'));
   const form = el.querySelector('form');
-  form.username.focus();
+  form.username.value = username;
+  (username ? form.password : form.username).focus();
+  $('#forgot-link', el).onclick = (e) => { e.preventDefault(); renderForgot(form.username.value.trim()); };
   form.onsubmit = async (e) => {
     e.preventDefault();
     const btn = form.querySelector('button[type=submit]');
@@ -114,6 +120,82 @@ function renderLogin() {
       box.querySelector('.alert-body').textContent = err.message;
       setBusy(btn, false);
     }
+  };
+}
+
+// Small card on the login background (forgot / reset password)
+function authCard(inner) {
+  const root = document.getElementById('root');
+  root.innerHTML = '';
+  const el = h(`<div class="login-wrap"><form class="card login-card stack" autocomplete="on">
+    <div class="brand"><div class="brand-logo">Ox</div><div><div class="brand-name">Oxidized Manager</div><div class="brand-sub">${esc(t('Network configuration backup management'))}</div></div></div>
+    ${inner}</form></div>`);
+  root.appendChild(el);
+  return el.querySelector('form');
+}
+
+function renderForgot(login = '') {
+  if (!state.me.reset_enabled) {
+    const f = authCard(`<h2>${esc(t('Forgot your password?'))}</h2>
+      <div class="alert info">${icon('info')}<div class="alert-body">${esc(t('Password reset by e-mail is not set up on this installation. Ask an administrator to set a new password for you.'))}</div></div>
+      <a href="#" class="btn" data-back>${icon('arrowLeft')} ${esc(t('Back to sign in'))}</a>`);
+    f.querySelector('[data-back]').onclick = (e) => { e.preventDefault(); renderLogin(); };
+    return;
+  }
+  const f = authCard(`<h2>${esc(t('Forgot your password?'))}</h2>
+    <div class="muted">${esc(t('Enter your username or e-mail address. If your account has an e-mail address, we send you a link to choose a new password.'))}</div>
+    <div class="field"><label>${esc(t('Username or e-mail'))}</label><input class="input" name="login" autocomplete="username" required></div>
+    <div id="fg-result"></div>
+    <button class="btn primary" type="submit" style="height:38px">${icon('send')} ${esc(t('Send reset link'))}</button>
+    <a href="#" class="btn ghost" data-back>${icon('arrowLeft')} ${esc(t('Back to sign in'))}</a>`);
+  f.login.value = login;
+  f.login.focus();
+  f.querySelector('[data-back]').onclick = (e) => { e.preventDefault(); renderLogin({ username: f.login.value.includes('@') ? '' : f.login.value.trim() }); };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = f.querySelector('button[type=submit]');
+    setBusy(btn, true, t('Sending'));
+    const box = $('#fg-result', f);
+    try {
+      await api.post('/api/auth/forgot', { login: f.login.value.trim() }, { noAuthRedirect: true });
+      box.innerHTML = `<div class="alert success">${icon('checkCircle')}<div class="alert-body">${esc(t('If an account with an e-mail address matches, a reset link is on its way. It is valid for one hour. Check your spam folder too.'))}</div></div>`;
+    } catch (err) {
+      box.innerHTML = `<div class="alert danger">${icon('alert')}<div class="alert-body">${esc(err.message)}</div></div>`;
+    }
+    setBusy(btn, false);
+  };
+}
+
+async function renderReset(token) {
+  const leave = (opts) => { history.replaceState(null, '', location.pathname); renderLogin(opts); };
+  let user;
+  try {
+    ({ user } = await api.get(`/api/auth/reset/${encodeURIComponent(token)}`, { noAuthRedirect: true }));
+  } catch (err) {
+    const f = authCard(`<h2>${esc(t('Choose a new password'))}</h2>
+      <div class="alert danger">${icon('alert')}<div class="alert-body">${esc(err.message)}</div></div>
+      <a href="#" class="btn" data-back>${icon('arrowLeft')} ${esc(t('Back to sign in'))}</a>`);
+    f.querySelector('[data-back]').onclick = (e) => { e.preventDefault(); leave(); };
+    return;
+  }
+  const f = authCard(`<h2>${esc(t('Choose a new password'))}</h2>
+    <div class="muted">${esc(t('Account'))}: <b>${esc(user)}</b></div>
+    <input type="text" name="username" value="${esc(user)}" autocomplete="username" hidden>
+    <div class="field"><label>${esc(t('New password'))} <span class="muted small">(${esc(t('at least 8 characters'))})</span></label>${pwField('rs-p1')}</div>
+    <div class="field"><label>${esc(t('New password (again)'))}</label>${pwField('rs-p2')}</div>
+    <div id="rs-err"></div>
+    <button class="btn primary" type="submit" style="height:38px">${icon('save')} ${esc(t('Save password'))}</button>`);
+  $('#rs-p1', f).focus();
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const err = (m) => { $('#rs-err', f).innerHTML = `<div class="alert danger">${icon('alert')}<div class="alert-body">${esc(m)}</div></div>`; };
+    if ($('#rs-p1', f).value !== $('#rs-p2', f).value) { err(t('The new passwords do not match')); return; }
+    const btn = f.querySelector('button[type=submit]');
+    setBusy(btn, true);
+    try {
+      await api.post('/api/auth/reset', { token, password: $('#rs-p1', f).value }, { noAuthRedirect: true });
+      leave({ username: user, notice: t('Your password was changed. Sign in with the new password.') });
+    } catch (ex) { err(ex.message); setBusy(btn, false); }
   };
 }
 
@@ -143,8 +225,8 @@ function renderShell() {
       <nav class="nav" id="nav"></nav>
       <div class="sidebar-foot stack">
         <div class="row between small muted"><div class="btn-group" id="lang-btns"></div><div class="btn-group" id="theme-btns"></div></div>
-        <button class="user-chip" id="user-menu">${icon('user')}<span class="ellipsis"><b>${esc(state.user)}</b></span>
-          ${isAdmin() ? `<span class="badge primary">${esc(t('Admin'))}</span>` : ''}${icon('chevronDown')}</button>
+        <div class="row" style="gap:6px"><button class="user-chip" id="user-menu" title="${esc(t('Account'))}"></button>
+          <button class="btn icon" id="sign-out" style="height:44px;width:44px" title="${esc(t('Sign out'))}" aria-label="${esc(t('Sign out'))}">${icon('logout')}</button></div>
       </div>
     </aside>
     <div class="main">
@@ -160,11 +242,14 @@ function renderShell() {
   root.appendChild(el);
   themeButtons($('#theme-btns', el));
   langButtons($('#lang-btns', el));
+  renderUserChip();
   $('#user-menu', el).onclick = (e) => dropdown(e.currentTarget, [
-    { label: t('Change password'), icon: 'lock', onClick: changePassword },
+    { label: t('My profile'), icon: 'user', onClick: profileDialog },
+    { label: t('Change password'), icon: 'lock', onClick: () => profileDialog({ password: true }) },
     '-',
-    { label: t('Sign out'), icon: 'logout', onClick: async () => { await api.post('/api/auth/logout'); state.user = null; renderLogin(); } },
-  ], { left: true, up: true });
+    { label: t('Sign out'), icon: 'logout', danger: true, onClick: signOut },
+  ], { left: true });
+  $('#sign-out', el).onclick = signOut;
   // narrow screens: slide the sidebar in/out; wide screens: collapse it (remembered)
   try { if (localStorage.getItem('oxmgr-nav-collapsed') === '1') el.classList.add('nav-collapsed'); } catch (e) { /* ignore */ }
   $('#menu-toggle', el).onclick = (e) => {
@@ -189,21 +274,62 @@ function renderShell() {
   renderWorkspaceSwitch();
 }
 
-function changePassword() {
+async function signOut() {
+  try { await api.post('/api/auth/logout'); } catch (e) { /* the session is gone anyway */ }
+  state.user = null;
+  renderLogin();
+}
+
+export function renderUserChip() {
+  const chip = $('#user-menu');
+  if (!chip) return;
+  const p = state.me.profile || {};
+  const name = displayName(p, state.user);
+  const sub = [name !== state.user ? state.user : '', isAdmin() ? t('Admin') : ''].filter(Boolean).join(' · ');
+  chip.innerHTML = `${avatar(p, state.user, 28)}<span class="ellipsis"><b>${esc(name)}</b>${sub ? `<span class="chip-sub">${esc(sub)}</span>` : ''}</span>${icon('chevronDown')}`;
+}
+
+// My profile: name, e-mail (Gravatar) and password
+function profileDialog({ password = false } = {}) {
+  const p = state.me.profile || {};
   const m = modal({
-    title: `${icon('lock')} ${esc(t('Change password'))}`, size: 'sm',
+    title: `${icon('user')} ${esc(t('My profile'))}`,
     body: `<form class="stack" autocomplete="off">
-      <div class="field"><label>${esc(t('Current password'))}</label><input class="input" type="password" name="cur" autocomplete="current-password"></div>
-      <div class="field"><label>${esc(t('New password'))} <span class="muted small">(${esc(t('at least 8 characters'))})</span></label><input class="input" type="password" name="n1" autocomplete="new-password"></div>
-      <div class="field"><label>${esc(t('New password (again)'))}</label><input class="input" type="password" name="n2" autocomplete="new-password"></div></form>`,
-    footer: `<button class="btn" data-a="no">${esc(t('Cancel'))}</button><button class="btn primary" data-a="yes">${esc(t('Change password'))}</button>`,
+      <div class="row" style="gap:14px;flex-wrap:nowrap;align-items:center"><span id="pf-avatar">${avatar(p, state.user, 56)}</span>
+        <div><b>${esc(state.user)}</b>${isAdmin() ? ` <span class="badge primary">${esc(t('Admin'))}</span>` : ''}
+          <div class="small muted">${t('The photo comes from <a href="https://gravatar.com" target="_blank" rel="noopener">Gravatar</a> when your e-mail address has one; otherwise your initials are shown.')}</div></div></div>
+      <div class="grid c2">
+        <div class="field"><label>${esc(t('First name'))}</label><input class="input" name="first_name" value="${esc(p.first_name || '')}" maxlength="64" autocomplete="given-name"></div>
+        <div class="field"><label>${esc(t('Last name'))}</label><input class="input" name="last_name" value="${esc(p.last_name || '')}" maxlength="64" autocomplete="family-name"></div>
+      </div>
+      <div class="field"><label>${esc(t('E-mail'))}</label><input class="input" type="email" name="email" value="${esc(p.email || '')}" autocomplete="email" placeholder="name@example.com">
+        <div class="small muted">${esc(t('Used for password reset links.'))}</div></div>
+      <details id="pf-pw" ${password ? 'open' : ''}><summary class="section-title" style="cursor:pointer">${icon('lock')} ${esc(t('Change password'))}</summary>
+        <div class="stack" style="margin-top:10px">
+          <div class="field"><label>${esc(t('Current password'))}</label><input class="input" type="password" name="cur" autocomplete="current-password"></div>
+          <div class="grid c2">
+            <div class="field"><label>${esc(t('New password'))} <span class="muted small">(${esc(t('at least 8 characters'))})</span></label><input class="input" type="password" name="n1" autocomplete="new-password"></div>
+            <div class="field"><label>${esc(t('New password (again)'))}</label><input class="input" type="password" name="n2" autocomplete="new-password"></div>
+          </div></div></details></form>`,
+    footer: `<button class="btn" data-a="no">${esc(t('Cancel'))}</button><button class="btn primary" data-a="yes">${icon('save')} ${esc(t('Save'))}</button>`,
   });
   const f = m.body.querySelector('form');
+  if (password) setTimeout(() => f.cur.focus(), 40);
   m.foot.querySelector('[data-a=no]').onclick = m.close;
   m.foot.querySelector('[data-a=yes]').onclick = async (e) => {
-    if (f.n1.value !== f.n2.value) { toast(t('The new passwords do not match'), 'warning'); return; }
+    const changePw = f.cur.value || f.n1.value || f.n2.value;
+    if (changePw && f.n1.value !== f.n2.value) { toast(t('The new passwords do not match'), 'warning'); return; }
     setBusy(e.currentTarget, true);
-    try { await api.put('/api/users/me/password', { current: f.cur.value, new: f.n1.value }); m.close(); toast(t('Password changed'), 'success'); } catch (err) { toastError(err); setBusy(e.currentTarget, false); }
+    try {
+      if (changePw) {
+        await api.put('/api/users/me/password', { current: f.cur.value, new: f.n1.value });
+        f.cur.value = ''; f.n1.value = ''; f.n2.value = '';
+      }
+      state.me.profile = await api.put('/api/profile', { first_name: f.first_name.value, last_name: f.last_name.value, email: f.email.value });
+      renderUserChip();
+      m.close();
+      toast(changePw ? t('Profile and password saved') : t('Profile saved'), 'success');
+    } catch (err) { toastError(err); setBusy(e.currentTarget, false); }
   };
 }
 
@@ -350,10 +476,18 @@ export async function route() {
   }
 }
 
+// A password reset link (#/reset/<token>) opens the reset form, whether or not someone is signed in
+function resetLink() {
+  const m = location.hash.match(/^#\/reset\/([\w-]+)$/);
+  if (m) renderReset(m[1]);
+  return !!m;
+}
+
 export async function boot() {
   const me = await api.get('/api/auth/me', { noAuthRedirect: true });
   state.me = me;
   if (me.needs_setup) { renderSetup(); return; }
+  if (resetLink()) return;
   if (!me.user) { renderLogin(); return; }
   state.user = me.user;
   state.role = me.role;
@@ -383,7 +517,7 @@ export async function enterApp(wid) {
   route();
 }
 
-window.addEventListener('hashchange', route);
+window.addEventListener('hashchange', () => { if (!resetLink()) route(); });
 window.addEventListener('oxmgr:unauthorized', () => { if (state.user) { state.user = null; renderLogin(); toast(t('Your session has expired'), 'warning'); } });
 boot().catch((e) => {
   document.getElementById('root').innerHTML = `<div class="content"><div class="alert danger">${icon('alert')}<div class="alert-body">${esc(e.message)}</div></div></div>`;

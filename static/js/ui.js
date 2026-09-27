@@ -73,9 +73,22 @@ const ICONS = {
   github: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>',
   gitlab: '<path d="m22 13.29-3.33-10a.42.42 0 0 0-.14-.18.38.38 0 0 0-.22-.11.39.39 0 0 0-.23.07.42.42 0 0 0-.14.18l-2.26 6.67H8.32L6.1 3.26a.42.42 0 0 0-.1-.18.38.38 0 0 0-.26-.08.39.39 0 0 0-.23.07.42.42 0 0 0-.14.18L2 13.29a.74.74 0 0 0 .27.83L12 21l9.69-6.88a.71.71 0 0 0 .31-.83Z"/>',
   tea: '<path d="M17 8h1a4 4 0 1 1 0 8h-1M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z"/><path d="M6 2v2M10 2v2M14 2v2"/>',
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
 };
 
 export const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+
+// "First Last", or the username when no name is set
+export const displayName = (p = {}, username = '') => [p.first_name, p.last_name].filter(Boolean).join(' ') || username;
+
+// Round avatar: the Gravatar photo of the e-mail (hash = SHA-256), with the initials underneath as a fallback
+export function avatar(p = {}, username = '', size = 28) {
+  const name = displayName(p, username);
+  const initials = (name.match(/\p{L}|\d/gu) ? name.split(/[\s._@-]+/).filter(Boolean).slice(0, 2).map((w) => [...w][0]).join('') : '?').toUpperCase();
+  const img = p.avatar ? `<img src="https://gravatar.com/avatar/${esc(p.avatar)}?s=${size * 2}&d=404" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
+  return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.4)}px" aria-hidden="true"><span>${esc(initials)}</span>${img}</span>`;
+}
 
 // ------------------------------------------------------------------ DOM
 export function h(html) {
@@ -189,6 +202,7 @@ export function dropdown(anchor, items, { left = false } = {}) {
   document.body.appendChild(menu);
   // open upwards when there is no room below (e.g. the user menu at the bottom of the sidebar)
   if (r.bottom + 6 + menu.offsetHeight > window.innerHeight && r.top > menu.offsetHeight + 6) {
+    menu.style.top = 'auto'; // the stylesheet's top would push the menu off the screen
     menu.style.bottom = `${window.innerHeight - r.top + 6}px`;
   } else {
     menu.style.top = `${r.bottom + 6}px`;
