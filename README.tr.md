@@ -55,6 +55,14 @@ cp .env.example .env    # isteğe bağlı, her ayarın varsayılanı var
 docker compose up -d --build
 ```
 
+Ya da repoyu clone'lamadan [Docker Hub](https://hub.docker.com/r/tmrhnoztrkk/oxidized-manager)'daki hazır image'ı çalıştırın (`ghcr.io/tmrhnoztrkk/oxidized-manager` adresinde de var):
+
+```bash
+docker run -d --name oxidized-manager --restart unless-stopped \
+  -p 8080:8080 -v oxidized-manager-data:/data \
+  tmrhnoztrkk/oxidized-manager:latest
+```
+
 `http://SUNUCU:8080` adresini açın. İlk açılışta kurulum sihirbazı gelir:
 
 1. **Dil ve yönetici hesabı.**

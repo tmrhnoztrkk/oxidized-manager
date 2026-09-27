@@ -67,6 +67,14 @@ cp .env.example .env    # optional, every setting has a default
 docker compose up -d --build
 ```
 
+Or run the published image from [Docker Hub](https://hub.docker.com/r/tmrhnoztrkk/oxidized-manager) (also on `ghcr.io/tmrhnoztrkk/oxidized-manager`), without cloning:
+
+```bash
+docker run -d --name oxidized-manager --restart unless-stopped \
+  -p 8080:8080 -v oxidized-manager-data:/data \
+  tmrhnoztrkk/oxidized-manager:latest
+```
+
 Open `http://SERVER:8080`. The first visit starts a setup wizard with three steps:
 
 1. **Language and administrator account.**
