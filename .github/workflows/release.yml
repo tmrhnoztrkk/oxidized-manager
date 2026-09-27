@@ -1,18 +1,34 @@
 name: Release image
 
+# A "v*" tag builds the image for amd64 + arm64 and pushes it to GitHub Container Registry and,
+# when configured, Docker Hub. Docker Hub needs the repository variable DOCKERHUB_USERNAME and the
+# secret DOCKERHUB_TOKEN (a Docker Hub access token with Read, Write & Delete permission).
+# "Run workflow" publishes an existing tag again, e.g. to fill a newly added registry.
+
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, e.g. v3.1.0"
+        required: true
 
 permissions:
   contents: read
   packages: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_USERNAME }}/oxidized-manager
 
 jobs:
   image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -20,13 +36,20 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v3
+        if: vars.DOCKERHUB_USERNAME != ''
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: |
+            ghcr.io/${{ github.repository }}
+            name=docker.io/${{ env.DOCKERHUB_IMAGE }},enable=${{ vars.DOCKERHUB_USERNAME != '' }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
             type=raw,value=latest
       - uses: docker/build-push-action@v6
         with:
@@ -35,3 +58,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+      # Docker Hub page: the README, with repository-relative links made absolute
+      - name: Prepare the Docker Hub description
+        if: vars.DOCKERHUB_USERNAME != ''
+        run: |
+          sed -E 's#\]\((docs/[^)]+)\)#](https://raw.githubusercontent.com/${{ github.repository }}/${{ env.TAG }}/\1)#g; s#\]\(([A-Za-z][A-Za-z.]*)\)#](https://github.com/${{ github.repository }}/blob/${{ env.TAG }}/\1)#g' README.md > /tmp/dockerhub-readme.md
+      - uses: peter-evans/dockerhub-description@v4
+        if: vars.DOCKERHUB_USERNAME != ''
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          short-description: "Web UI for Oxidized: devices, workspaces, users & roles, git backup destinations"
+          readme-filepath: /tmp/dockerhub-readme.md
