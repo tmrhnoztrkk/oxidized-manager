@@ -165,7 +165,15 @@ function renderShell() {
     '-',
     { label: t('Sign out'), icon: 'logout', onClick: async () => { await api.post('/api/auth/logout'); state.user = null; renderLogin(); } },
   ], { left: true, up: true });
-  $('#menu-toggle', el).onclick = () => el.classList.toggle('nav-open');
+  // narrow screens: slide the sidebar in/out; wide screens: collapse it (remembered)
+  try { if (localStorage.getItem('oxmgr-nav-collapsed') === '1') el.classList.add('nav-collapsed'); } catch (e) { /* ignore */ }
+  $('#menu-toggle', el).onclick = (e) => {
+    e.stopPropagation();
+    if (matchMedia('(max-width: 900px)').matches) { el.classList.toggle('nav-open'); return; }
+    const collapsed = el.classList.toggle('nav-collapsed');
+    try { localStorage.setItem('oxmgr-nav-collapsed', collapsed ? '1' : '0'); } catch (err) { /* ignore */ }
+  };
+  $('.main', el).addEventListener('click', () => el.classList.remove('nav-open'));
   $('#inst-switch', el).onclick = (e) => workspaceMenu(e.currentTarget);
   $('#top-reload', el).onclick = async (e) => {
     if (!state.iid) return;
